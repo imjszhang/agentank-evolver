@@ -1,0 +1,24 @@
+{
+  "name": "agentank-evolver",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local AgenTank strategy evolution workspace driven by js-evolution-agent.",
+  "type": "module",
+  "bin": {
+    "agentank-evolver": "src/cli.mjs"
+  },
+  "scripts": {
+    "start": "node src/cli.mjs",
+    "sync": "node src/cli.mjs sync",
+    "generate": "node src/cli.mjs generate",
+    "simulate": "node src/cli.mjs simulate",
+    "evaluate": "node src/cli.mjs evaluate",
+    "publish": "node src/cli.mjs publish",
+    "challenge-request": "node src/cli.mjs challenge-request",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "UNLICENSED"
+}
