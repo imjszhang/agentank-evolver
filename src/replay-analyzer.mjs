@@ -17,7 +17,7 @@ function tankName(meta, side) {
 export function analyzeReplay(response = {}, { opponentId = null, mapId = null } = {}) {
   const replay = response.replay || response;
   const meta = replay.meta || response.meta || {};
-  const frames = asArray(replay.frames || response.frames);
+  const frames = asArray(response.replayData?.replay?.records || replay.frames || response.frames);
   const winner = response.winner || meta.winner || replay.winner || null;
   const reason = response.reason || meta.reason || replay.reason || null;
   const text = stableString(frames).toLowerCase();
@@ -29,7 +29,7 @@ export function analyzeReplay(response = {}, { opponentId = null, mapId = null }
     winner,
     reason,
     frameCount: frames.length,
-    win: winner ? stableString(winner).toLowerCase().includes(String(myName).toLowerCase()) : false,
+    win: winner === 'me' ? true : (winner ? stableString(winner).toLowerCase().includes(String(myName).toLowerCase()) : false),
     draw: reason ? String(reason).toLowerCase().includes('draw') : false,
     starEvents: (text.match(/star/g) || []).length,
     fireEvents: (text.match(/fire/g) || []).length,
