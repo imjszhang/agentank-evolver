@@ -123,10 +123,18 @@ export async function generateCommand({ flags = {} } = {}) {
   };
 }
 
+function resolveCandidatePath(raw) {
+  if (!raw.includes('/') && !raw.includes('\\')) {
+    const filename = raw.endsWith('.json') ? raw : `${raw}.json`;
+    return join(dataRoot, 'candidates', filename);
+  }
+  return raw;
+}
+
 export async function simulateCommand({ api = apiFromConfig(), flags = {} } = {}) {
   ensureDataDirs();
   const candidateFile = flags.candidate
-    ? { value: JSON.parse(readFileSync(flags.candidate, 'utf-8')) }
+    ? { value: JSON.parse(readFileSync(resolveCandidatePath(flags.candidate), 'utf-8')) }
     : latestJson(join(dataRoot, 'candidates'));
   const candidate = candidateFile?.value;
   if (!candidate?.code) throw new Error('No candidate code found. Run generate first.');
