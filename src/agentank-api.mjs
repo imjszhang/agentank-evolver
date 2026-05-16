@@ -1,9 +1,20 @@
+import dns from 'node:dns';
 import { redact } from './redact.mjs';
+
+dns.setDefaultResultOrder('ipv4first');
 
 let nextRequestAt = 0;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryable(err) {
+  if (err.status) return false;
+  const code = err.cause?.code;
+  if (code) return ['ETIMEDOUT', 'ENETUNREACH', 'ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN'].includes(code);
+  if (err.message && err.message.includes('fetch failed')) return true;
+  return false;
 }
 
 async function throttle(minIntervalMs = 2100) {
@@ -22,31 +33,47 @@ export class AgenTankApi {
     this.fetch = fetchImpl;
   }
 
-  async request(path, { method = 'GET', body = null, auth = true } = {}) {
+  async request(path, { method = 'GET', body = null, auth = true, retries = 3 } = {}) {
     await throttle();
     const headers = { accept: 'application/json' };
     if (auth) headers.authorization = `Bearer ${this.tankKey}`;
     if (body != null) headers['content-type'] = 'application/json';
 
-    const response = await this.fetch(`${this.baseUrl}${path}`, {
+    const url = `${this.baseUrl}${path}`;
+    const fetchOptions = {
       method,
       headers,
       body: body == null ? undefined : JSON.stringify(body),
-    });
-    const text = await response.text();
-    let payload = null;
-    try {
-      payload = text ? JSON.parse(text) : null;
-    } catch {
-      payload = { raw: text };
+    };
+
+    let lastError;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const response = await this.fetch(url, fetchOptions);
+        const text = await response.text();
+        let payload = null;
+        try {
+          payload = text ? JSON.parse(text) : null;
+        } catch {
+          payload = { raw: text };
+        }
+        if (!response.ok) {
+          const err = new Error(`AgenTank API ${method} ${path} failed with ${response.status}`);
+          err.status = response.status;
+          err.payload = redact(payload);
+          throw err;
+        }
+        return payload;
+      } catch (err) {
+        lastError = err;
+        if (attempt < retries && isRetryable(err)) {
+          await sleep(Math.pow(2, attempt) * 1000);
+          continue;
+        }
+        throw err;
+      }
     }
-    if (!response.ok) {
-      const err = new Error(`AgenTank API ${method} ${path} failed with ${response.status}`);
-      err.status = response.status;
-      err.payload = redact(payload);
-      throw err;
-    }
-    return payload;
+    throw lastError;
   }
 
   getTank() {
