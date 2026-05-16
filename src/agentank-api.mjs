@@ -31,6 +31,7 @@ export class AgenTankApi {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
     this.tankKey = tankKey;
     this.fetch = fetchImpl;
+    this._simCooldownUntil = 0;
   }
 
   async request(path, { method = 'GET', body = null, auth = true, retries = 3 } = {}) {
@@ -61,6 +62,19 @@ export class AgenTankApi {
           const err = new Error(`AgenTank API ${method} ${path} failed with ${response.status}`);
           err.status = response.status;
           err.payload = redact(payload);
+          if (response.status === 429) {
+            const retryAfter = response.headers.get('Retry-After');
+            let delaySec = 60;
+            if (retryAfter) {
+              delaySec = /^\d+$/.test(retryAfter)
+                ? parseInt(retryAfter, 10)
+                : Math.max(0, Math.ceil((new Date(retryAfter).getTime() - Date.now()) / 1000));
+            }
+            if (delaySec > 0) {
+              this._simCooldownUntil = Date.now() + delaySec * 1000 + 1000;
+              err.retryAfterSec = delaySec;
+            }
+          }
           throw err;
         }
         return payload;
@@ -107,6 +121,39 @@ export class AgenTankApi {
       method: 'POST',
       body: { code, notes: notes || 'AgenTank evolver update', submittedBy },
     });
+  }
+
+  async getSimulationCooldown() {
+    if (this._simCooldownUntil > Date.now()) {
+      return {
+        nextSimulationAt: new Date(this._simCooldownUntil).toISOString(),
+        retrievedAt: new Date().toISOString(),
+        source: '429_retry_after',
+      };
+    }
+
+    try {
+      const tank = await this.getTank();
+      const apiNext = tank?.nextSimulationAt ?? tank?.tank?.nextSimulationAt ?? null;
+      const apiNextMs = apiNext ? new Date(apiNext).getTime() : 0;
+      const effectiveMs = Math.max(apiNextMs, this._simCooldownUntil);
+      return {
+        nextSimulationAt: effectiveMs > Date.now() ? new Date(effectiveMs).toISOString() : null,
+        retrievedAt: new Date().toISOString(),
+        source: 'tank_api',
+      };
+    } catch (err) {
+      if (err.status === 429) throw err;
+      if (this._simCooldownUntil > Date.now()) {
+        return {
+          nextSimulationAt: new Date(this._simCooldownUntil).toISOString(),
+          retrievedAt: new Date().toISOString(),
+          source: '429_retry_after',
+          note: 'tank_fetch_failed_using_local_cooldown',
+        };
+      }
+      return { nextSimulationAt: null, retrievedAt: new Date().toISOString(), error: 'tank_fetch_failed' };
+    }
   }
 
   /** Recorded battle: affects rankings. See POST /api/agent/tank/challenge in the Agent Guide. */

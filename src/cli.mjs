@@ -9,6 +9,7 @@ import {
   ensureDataDirs,
   latestJson,
   projectRoot,
+  readJsonSafe,
   sha256,
   timestampId,
   writeJson,
@@ -133,6 +134,77 @@ function resolveCandidatePath(raw) {
 
 export async function simulateCommand({ api = apiFromConfig(), flags = {} } = {}) {
   ensureDataDirs();
+  const cooldownStatePath = join(dataRoot, 'cooldown-state.json');
+  const cooldownState = readJsonSafe(cooldownStatePath, { lastSimulationAt: null, nextSimulationAt: null, skipLog: [] });
+  const now = new Date();
+
+  // Check persisted local cooldown first (survives process restarts)
+  if (cooldownState.nextSimulationAt) {
+    const localNext = new Date(cooldownState.nextSimulationAt);
+    if (now < localNext) {
+      const skipEntry = {
+        skippedAt: now.toISOString(),
+        reason: 'cooldown_active_local',
+        nextSimulationAt: cooldownState.nextSimulationAt,
+        remainingMs: localNext.getTime() - now.getTime(),
+      };
+      cooldownState.skipLog.push(skipEntry);
+      if (cooldownState.skipLog.length > 50) cooldownState.skipLog = cooldownState.skipLog.slice(-50);
+      writeJson(cooldownStatePath, cooldownState);
+      return {
+        success: true,
+        status: 'skipped_cooldown',
+        message: `Simulation cooldown active (local) until ${cooldownState.nextSimulationAt}. Skipped at ${now.toISOString()}.`,
+        cooldown: {
+          nextSimulationAt: cooldownState.nextSimulationAt,
+          remainingMs: localNext.getTime() - now.getTime(),
+          source: 'local_state',
+          skipLogCount: cooldownState.skipLog.length,
+        },
+        writes: {
+          observations: [
+            observation(`模拟跳过：本地冷却生效至 ${cooldownState.nextSimulationAt}，剩余 ${Math.ceil((localNext - now) / 1000)}s。`, {
+              evidence: { cooldownStatePath, skipEntry },
+            }),
+          ],
+        },
+      };
+    }
+  }
+
+  const cooldown = await api.getSimulationCooldown();
+  if (cooldown.nextSimulationAt) {
+    const nextAt = new Date(cooldown.nextSimulationAt);
+    if (now < nextAt) {
+      const skipEntry = {
+        skippedAt: now.toISOString(),
+        reason: 'cooldown_active',
+        nextSimulationAt: cooldown.nextSimulationAt,
+        remainingMs: nextAt.getTime() - now.getTime(),
+      };
+      cooldownState.skipLog.push(skipEntry);
+      if (cooldownState.skipLog.length > 50) cooldownState.skipLog = cooldownState.skipLog.slice(-50);
+      writeJson(cooldownStatePath, cooldownState);
+      return {
+        success: true,
+        status: 'skipped_cooldown',
+        message: `Simulation cooldown active until ${cooldown.nextSimulationAt}. Skipped at ${now.toISOString()}.`,
+        cooldown: {
+          nextSimulationAt: cooldown.nextSimulationAt,
+          remainingMs: nextAt.getTime() - now.getTime(),
+          skipLogCount: cooldownState.skipLog.length,
+        },
+        writes: {
+          observations: [
+            observation(`模拟跳过：冷却生效至 ${cooldown.nextSimulationAt}，剩余 ${Math.ceil((nextAt - now) / 1000)}s。`, {
+              evidence: { cooldownStatePath, skipEntry },
+            }),
+          ],
+        },
+      };
+    }
+  }
+
   const candidateFile = flags.candidate
     ? { value: JSON.parse(readFileSync(resolveCandidatePath(flags.candidate), 'utf-8')) }
     : latestJson(join(dataRoot, 'candidates'));
@@ -146,25 +218,90 @@ export async function simulateCommand({ api = apiFromConfig(), flags = {} } = {}
   const mapId = String(flags.map || 'classic');
   const simulations = [];
   for (const opponentId of opponents) {
-    const response = await api.simulate({ opponentId, mapId, code: candidate.code });
-    const metrics = analyzeReplay(response, { opponentId, mapId });
-    simulations.push({
-      opponentId,
-      mapId,
-      metrics,
-      score: scoreSimulation(metrics),
-      response: redact(response),
-    });
+    try {
+      const response = await api.simulate({ opponentId, mapId, code: candidate.code });
+      const metrics = analyzeReplay(response, { opponentId, mapId });
+      simulations.push({
+        opponentId,
+        mapId,
+        metrics,
+        score: scoreSimulation(metrics),
+        response: redact(response),
+      });
+    } catch (err) {
+      if (err.status === 429) {
+        const retrySec = err.retryAfterSec ?? 60;
+        const nextAt = new Date(Date.now() + retrySec * 1000).toISOString();
+        cooldownState.lastSimulationAt = new Date().toISOString();
+        cooldownState.nextSimulationAt = nextAt;
+        writeJson(cooldownStatePath, cooldownState);
+
+        if (simulations.length > 0) {
+          const partialId = `simulation-${timestampId()}`;
+          const partialRecord = {
+            id: partialId,
+            candidateId: candidate.id,
+            candidateHash: candidate.codeHash,
+            createdAt: new Date().toISOString(),
+            simulations,
+            partial: true,
+            cooldownBlocked: { nextSimulationAt: nextAt },
+          };
+          const partialPath = writeJson(join(dataRoot, 'simulations', `${partialId}.json`), redact(partialRecord));
+          return {
+            success: true,
+            status: 'partial_simulation_cooldown',
+            message: `${simulations.length}/${opponents.length} simulations completed before 429 cooldown.`,
+            simulation: { id: partialId, candidateId: candidate.id, count: simulations.length },
+            path: partialPath,
+            cooldown: { nextSimulationAt: nextAt },
+            evidence: { summaries: simulations.map((item) => ({ opponentId: item.opponentId, score: item.score, signal: item.metrics.signal })) },
+            writes: {
+              observations: [
+                observation(`候选策略 ${candidate.id} 部分模拟 ${simulations.length}/${opponents.length} 后遇 429 冷却。`, {
+                  evidence: { path: partialPath, cooldownStatePath },
+                }),
+              ],
+            },
+          };
+        }
+
+        return {
+          success: true,
+          status: 'skipped_cooldown',
+          message: `Simulation blocked by 429 cooldown. Next available: ${nextAt}`,
+          cooldown: { nextSimulationAt: nextAt },
+          writes: {
+            observations: [
+              observation(`模拟被 429 冷却阻塞，下次可用 ${nextAt}。`, {
+                evidence: { cooldownStatePath },
+              }),
+            ],
+          },
+        };
+      }
+      throw err;
+    }
+
+    cooldownState.lastSimulationAt = new Date().toISOString();
+    writeJson(cooldownStatePath, cooldownState);
   }
   const id = `simulation-${timestampId()}`;
+  const nowIso = new Date().toISOString();
   const record = {
     id,
     candidateId: candidate.id,
     candidateHash: candidate.codeHash,
-    createdAt: new Date().toISOString(),
+    createdAt: nowIso,
     simulations,
   };
   const path = writeJson(join(dataRoot, 'simulations', `${id}.json`), redact(record));
+
+  cooldownState.lastSimulationAt = nowIso;
+  cooldownState.nextSimulationAt = cooldown.nextSimulationAt ?? null;
+  if (cooldownState.skipLog.length > 50) cooldownState.skipLog = cooldownState.skipLog.slice(-50);
+  writeJson(cooldownStatePath, cooldownState);
+
   return {
     success: true,
     status: 'simulated',
