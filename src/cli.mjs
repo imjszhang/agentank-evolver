@@ -266,6 +266,83 @@ export async function publishCommand({ api = apiFromConfig(), config = loadConfi
   };
 }
 
+/** POST /api/agent/tank/challenge — real match record, affects rank. Gated by AGENTANK_ALLOW_CHALLENGE or --force. */
+export async function challengeCommand({ api = apiFromConfig(), config = loadConfig(), flags = {} } = {}) {
+  ensureDataDirs();
+  const mapId = String(flags.map || 'classic');
+  const randomOpponent =
+    flags.randomOpponent === true || flags.randomOpponent === 'true';
+  const opponentTankId = flags.opponentTankId ?? flags.opponent;
+
+  if (!config.allowChallenge && !flags.force) {
+    return {
+      success: false,
+      status: 'blocked',
+      message:
+        'Recorded challenge skipped. Set AGENTANK_ALLOW_CHALLENGE=true in .env or pass --force to call the challenge API.',
+    };
+  }
+  if (!randomOpponent && (opponentTankId == null || opponentTankId === '')) {
+    return {
+      success: false,
+      status: 'blocked',
+      message: 'Specify --randomOpponent or --opponentTankId <id> (counts as a ranked match).',
+    };
+  }
+
+  const response = await api.challenge({
+    mapId,
+    randomOpponent,
+    ...(randomOpponent ? {} : { opponentTankId: Number(opponentTankId) }),
+  });
+
+  const id = `challenge-${timestampId()}`;
+  const record = {
+    id,
+    createdAt: new Date().toISOString(),
+    mapId,
+    randomOpponent,
+    opponentTankId: randomOpponent ? null : Number(opponentTankId),
+    response: redact(response),
+  };
+  const path = writeJson(join(dataRoot, 'challenges', `${id}.json`), record);
+
+  const challengerId = response?.challengerTankId ?? null;
+  const defenderId = response?.defenderTankId ?? null;
+  const winnerTankId = response?.winnerTankId ?? null;
+  let winnerSummary = null;
+  if (challengerId != null && winnerTankId === challengerId) winnerSummary = 'challenger';
+  else if (defenderId != null && winnerTankId === defenderId) winnerSummary = 'defender';
+  const matchUrlId = response?.urlId ?? response?.matchUrlId ?? null;
+  const historyPath = matchUrlId ? `/history/${matchUrlId}` : null;
+
+  return {
+    success: true,
+    status: 'challenged',
+    path,
+    challenge: {
+      id,
+      mapId,
+      randomOpponent,
+      matchId: response?.id ?? null,
+      resultReason: response?.resultReason ?? null,
+      winnerTankId,
+      winner: winnerSummary,
+      challengerTankId: challengerId,
+      defenderTankId: defenderId,
+      matchUrlId,
+      replayUrlPath: historyPath,
+    },
+    writes: {
+      observations: [
+        observation('已完成远端真实 challenge（计分战报）；结果已写入 data/challenges。', {
+          evidence: { path, winner: winnerSummary, matchUrlId, resultReason: response?.resultReason },
+        }),
+      ],
+    },
+  };
+}
+
 export async function challengeRequestCommand({ flags = {} } = {}) {
   ensureDataDirs();
   const id = `challenge-request-${timestampId()}`;
@@ -300,7 +377,15 @@ export async function main(argv = process.argv.slice(2)) {
     if (command === 'help') {
       return {
         success: true,
-        commands: ['sync', 'generate', 'simulate', 'evaluate', 'publish', 'challenge-request'],
+        commands: [
+          'sync',
+          'generate',
+          'simulate',
+          'evaluate',
+          'publish',
+          'challenge',
+          'challenge-request',
+        ],
         projectRoot,
       };
     }
@@ -309,6 +394,7 @@ export async function main(argv = process.argv.slice(2)) {
     if (command === 'simulate') return simulateCommand({ flags });
     if (command === 'evaluate') return evaluateCommand({ flags });
     if (command === 'publish') return publishCommand({ flags });
+    if (command === 'challenge') return challengeCommand({ flags });
     if (command === 'challenge-request') return challengeRequestCommand({ flags });
     return { success: false, status: 'unknown_command', command };
   } catch (error) {

@@ -21,6 +21,7 @@ export const DATA_DIRS = [
   'scores',
   'publish',
   'challenge-requests',
+  'challenges',
 ];
 
 export function ensureDataDirs() {

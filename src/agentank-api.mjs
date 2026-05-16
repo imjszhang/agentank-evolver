@@ -81,4 +81,21 @@ export class AgenTankApi {
       body: { code, notes: notes || 'AgenTank evolver update', submittedBy },
     });
   }
+
+  /** Recorded battle: affects rankings. See POST /api/agent/tank/challenge in the Agent Guide. */
+  challenge({ opponentTankId, randomOpponent = false, mapId = 'classic' } = {}) {
+    if (randomOpponent) {
+      return this.request('/api/agent/tank/challenge', {
+        method: 'POST',
+        body: { randomOpponent: true, mapId },
+      });
+    }
+    if (opponentTankId != null && opponentTankId !== '') {
+      return this.request('/api/agent/tank/challenge', {
+        method: 'POST',
+        body: { opponentTankId: Number(opponentTankId), mapId },
+      });
+    }
+    throw new Error('challenge requires opponentTankId or randomOpponent: true');
+  }
 }

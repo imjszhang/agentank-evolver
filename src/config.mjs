@@ -25,6 +25,7 @@ export function loadConfig(env = process.env) {
     baseUrl,
     tankKey,
     allowPublish: String(env.AGENTANK_ALLOW_PUBLISH || '').toLowerCase() === 'true',
+    allowChallenge: String(env.AGENTANK_ALLOW_CHALLENGE || '').toLowerCase() === 'true',
     submittedBy: String(env.AGENTANK_SUBMITTED_BY || 'Cursor').trim() || 'Cursor',
   };
 }
