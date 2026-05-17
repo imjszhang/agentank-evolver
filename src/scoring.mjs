@@ -23,6 +23,22 @@ export function evaluateCandidate(simulations = [], { minimumAverage = 45 } = {}
   const min = scored.length ? Math.min(...scored.map((item) => item.score)) : 0;
   const max = scored.length ? Math.max(...scored.map((item) => item.score)) : 0;
   const range = max - min;
+  // False positive: single high score masks overall fragility (e.g. avg=49, std=50.9, losses=1)
+  if (average >= minimumAverage && losses <= 1 && std > 45) {
+    return {
+      passed: false,
+      average,
+      std,
+      min,
+      max,
+      range,
+      total,
+      count: scored.length,
+      losses,
+      recommendation: 'keep_current',
+      scored,
+    };
+  }
   const passed = scored.length > 0 && average >= minimumAverage && losses < scored.length && std <= 45 && min >= 10;
   return {
     passed,

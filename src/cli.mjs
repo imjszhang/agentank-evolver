@@ -99,13 +99,24 @@ export async function generateCommand({ flags = {} } = {}) {
   ensureDataDirs();
   const latestContext = latestJson(join(dataRoot, 'context'))?.value;
   const tankName = latestContext?.tank?.tank?.name || latestContext?.tank?.name || 'agentank-tank';
-  const code = buildBaseStrategy({ tankName });
+  let params;
+  if (flags.params) {
+    try {
+      params = JSON.parse(flags.params);
+    } catch (err) {
+      return { success: false, status: 'invalid_params', message: `Failed to parse --params JSON: ${err.message}` };
+    }
+  }
+  const seed = flags.seed != null ? Number(flags.seed) : (params?._seed != null ? Number(params._seed) : Date.now());
+  const code = buildBaseStrategy({ tankName, seed, params });
   const codeHash = sha256(code);
   const id = `candidate-${timestampId()}`;
   const candidate = {
     id,
     createdAt: new Date().toISOString(),
     source: 'baseline-robust-combat',
+    seed,
+    params: params ?? null,
     codeHash,
     notes: flags.notes || '安全移动、抢星、直线射击、躲弹和技能门禁的保守基线。',
     code,
@@ -114,11 +125,11 @@ export async function generateCommand({ flags = {} } = {}) {
   return {
     success: true,
     status: 'candidate_generated',
-    candidate: { id, codeHash, notes: candidate.notes },
+    candidate: { id, codeHash, seed, notes: candidate.notes },
     path,
     writes: {
       observations: [
-        observation(`已生成候选策略 ${id}。`, { evidence: { path, codeHash } }),
+        observation(`已生成候选策略 ${id}（seed=${seed}）。`, { evidence: { path, codeHash, seed } }),
       ],
     },
   };
@@ -336,7 +347,7 @@ export async function evaluateCommand({ flags = {} } = {}) {
     ...evaluation,
   };
   const path = writeJson(join(dataRoot, 'scores', `${id}.json`), scored);
-  return {
+  const result = {
     success: true,
     status: evaluation.passed ? 'passed' : 'failed',
     path,
@@ -356,6 +367,24 @@ export async function evaluateCommand({ flags = {} } = {}) {
       ],
     },
   };
+
+  if (evaluation.passed && evaluation.recommendation === 'publish_candidate') {
+    const cfg = loadConfig();
+    if (cfg.allowPublish) {
+      try {
+        const pubResult = await publishCommand({ flags });
+        result.publish = pubResult;
+      } catch (err) {
+        result.publish = {
+          success: false,
+          status: 'publish_failed',
+          message: err?.message || String(err),
+        };
+      }
+    }
+  }
+
+  return result;
 }
 
 export async function publishCommand({ api = apiFromConfig(), config = loadConfig(), flags = {} } = {}) {
