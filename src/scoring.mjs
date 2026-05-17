@@ -18,10 +18,19 @@ export function evaluateCandidate(simulations = [], { minimumAverage = 45 } = {}
   const total = scored.reduce((sum, item) => sum + item.score, 0);
   const average = scored.length ? total / scored.length : 0;
   const losses = scored.filter((item) => !item.metrics?.win && !item.win && !item.metrics?.draw && !item.draw).length;
-  const passed = scored.length > 0 && average >= minimumAverage && losses < scored.length;
+  const variance = scored.length ? scored.reduce((sum, item) => sum + (item.score - average) ** 2, 0) / scored.length : 0;
+  const std = Math.sqrt(variance);
+  const min = scored.length ? Math.min(...scored.map((item) => item.score)) : 0;
+  const max = scored.length ? Math.max(...scored.map((item) => item.score)) : 0;
+  const range = max - min;
+  const passed = scored.length > 0 && average >= minimumAverage && losses < scored.length && std <= 45 && min >= 10;
   return {
     passed,
     average,
+    std,
+    min,
+    max,
+    range,
     total,
     count: scored.length,
     losses,
