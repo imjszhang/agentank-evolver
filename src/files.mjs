@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 
 export const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const dataRoot = join(projectRoot, 'data');
+export const latestFilePath = join(dataRoot, 'latest.json');
 
 export const DATA_DIRS = [
   'context',

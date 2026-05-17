@@ -7,6 +7,7 @@ import { loadConfig } from './config.mjs';
 import {
   dataRoot,
   ensureDataDirs,
+  latestFilePath,
   latestJson,
   projectRoot,
   readJsonSafe,
@@ -122,6 +123,11 @@ export async function generateCommand({ flags = {} } = {}) {
     code,
   };
   const path = writeJson(join(dataRoot, 'candidates', `${id}.json`), candidate);
+  writeJson(latestFilePath, {
+    candidate: id,
+    score: null,
+    timestamp: new Date().toISOString(),
+  });
   return {
     success: true,
     status: 'candidate_generated',
@@ -329,10 +335,23 @@ export async function simulateCommand({ api = apiFromConfig(), flags = {} } = {}
 
 export async function evaluateCommand({ flags = {} } = {}) {
   ensureDataDirs();
-  const simulation = flags.simulation
-    ? readFileSync(flags.simulation, 'utf-8')
-    : null;
-  const record = simulation ? JSON.parse(simulation) : latestJson(join(dataRoot, 'simulations'))?.value;
+  let record;
+  if (flags.simulation === 'latest') {
+    const ref = readJsonSafe(latestFilePath);
+    if (ref?.score) {
+      const scoreRecord = readJsonSafe(join(dataRoot, 'scores', `${ref.score}.json`));
+      if (scoreRecord?.simulationId) {
+        record = readJsonSafe(join(dataRoot, 'simulations', `${scoreRecord.simulationId}.json`));
+      }
+    }
+    if (!record) {
+      record = latestJson(join(dataRoot, 'simulations'))?.value;
+    }
+  } else if (flags.simulation) {
+    record = JSON.parse(readFileSync(flags.simulation, 'utf-8'));
+  } else {
+    record = latestJson(join(dataRoot, 'simulations'))?.value;
+  }
   if (!record?.simulations) throw new Error('No simulation record found. Run simulate first.');
   const evaluation = evaluateCandidate(record.simulations, {
     minimumAverage: Number(flags.minimumAverage || 45),
@@ -347,6 +366,11 @@ export async function evaluateCommand({ flags = {} } = {}) {
     ...evaluation,
   };
   const path = writeJson(join(dataRoot, 'scores', `${id}.json`), scored);
+  writeJson(latestFilePath, {
+    candidate: scored.candidateId,
+    score: id,
+    timestamp: new Date().toISOString(),
+  });
   const result = {
     success: true,
     status: evaluation.passed ? 'passed' : 'failed',
