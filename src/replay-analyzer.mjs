@@ -32,7 +32,7 @@ export function analyzeReplay(response = {}, { opponentId = null, mapId = null }
     win: winner === 'me' ? true : (winner ? stableString(winner).toLowerCase().includes(String(myName).toLowerCase()) : false),
     draw: reason ? String(reason).toLowerCase().includes('draw') : false,
     starEvents: (text.match(/star/g) || []).length,
-    fireEvents: (text.match(/fire/g) || []).length,
+    fireEvents: (text.match(/type":"bullet/g) || []).length,
     hitEvents: (text.match(/hit|destroy|kill/g) || []).length,
     crashEvents: (text.match(/crash|wall|collision/g) || []).length,
     skillEvents: (text.match(/shield|freeze|stun|overload|cloak|poison|teleport|boost/g) || []).length,
