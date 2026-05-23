@@ -20,6 +20,8 @@ import { redact } from './redact.mjs';
 import { evaluateCandidate, scoreSimulation } from './scoring.mjs';
 import { buildBaseStrategy } from './strategy/base-strategy.mjs';
 
+process.env.INJECTION_APPLY = '1';
+
 const TRAINING_BOTS = ['nova-scout', 'azure-hunter', 'crimson-bastion'];
 
 function parseArgv(argv) {
@@ -98,6 +100,7 @@ export async function syncCommand({ api = apiFromConfig(), flags = {} } = {}) {
 
 export async function generateCommand({ flags = {} } = {}) {
   ensureDataDirs();
+  const injectionOn = process.env.INJECTION_APPLY === '1' || process.env.INJECTION_APPLY === 'true';
   const latestContext = latestJson(join(dataRoot, 'context'))?.value;
   const tankName = latestContext?.tank?.tank?.name || latestContext?.tank?.name || 'agentank-tank';
   let params;
@@ -108,18 +111,24 @@ export async function generateCommand({ flags = {} } = {}) {
       return { success: false, status: 'invalid_params', message: `Failed to parse --params JSON: ${err.message}` };
     }
   }
+  // When injection is off, ignore param-driven mutations (only explicit overrides take effect)
+  const effectiveParams = injectionOn ? (params ?? null) : null;
   const seed = flags.seed != null ? Number(flags.seed) : (params?._seed != null ? Number(params._seed) : Date.now());
-  const code = buildBaseStrategy({ tankName, seed, params });
-  const codeHash = sha256(code);
+  const injectionPoints = effectiveParams ? Object.entries(effectiveParams).sort((a, b) => a[0].localeCompare(b[0])) : [];
+  const code = buildBaseStrategy({ tankName, seed, params: effectiveParams });
+  const codeHash = sha256(code + JSON.stringify(injectionPoints));
   const id = `candidate-${timestampId()}`;
   const candidate = {
     id,
     createdAt: new Date().toISOString(),
-    source: 'baseline-robust-combat',
+    source: injectionOn ? 'injection-mutation' : 'baseline-robust-combat',
+    injectionOn,
     seed,
-    params: params ?? null,
+    params: effectiveParams ?? null,
     codeHash,
-    notes: flags.notes || '安全移动、抢星、直线射击、躲弹和技能门禁的保守基线。',
+    notes: flags.notes || (injectionOn
+      ? '注入启用的变异策略（22 个注入点参数化）。'
+      : '安全移动、抢星、直线射击、躲弹和技能门禁的保守基线。'),
     code,
   };
   const path = writeJson(join(dataRoot, 'candidates', `${id}.json`), candidate);
@@ -131,11 +140,12 @@ export async function generateCommand({ flags = {} } = {}) {
   return {
     success: true,
     status: 'candidate_generated',
-    candidate: { id, codeHash, seed, notes: candidate.notes },
+    injectionOn,
+    candidate: { id, codeHash, seed, injectionOn, notes: candidate.notes },
     path,
     writes: {
       observations: [
-        observation(`已生成候选策略 ${id}（seed=${seed}）。`, { evidence: { path, codeHash, seed } }),
+        observation(`已生成候选策略 ${id}（seed=${seed}${injectionOn ? ', injection=on' : ''}）。`, { evidence: { path, codeHash, seed, injectionOn } }),
       ],
     },
   };
@@ -302,6 +312,11 @@ export async function simulateCommand({ api = apiFromConfig(), flags = {} } = {}
 
     cooldownState.lastSimulationAt = new Date().toISOString();
     writeJson(cooldownStatePath, cooldownState);
+
+    // Delay between consecutive simulate calls to avoid API rate-limit (HTTP 429)
+    if (opponents.length > 1) {
+      await new Promise((r) => setTimeout(r, 5000));
+    }
   }
   const id = `simulation-${timestampId()}`;
   const nowIso = new Date().toISOString();

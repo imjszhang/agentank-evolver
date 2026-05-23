@@ -1,3 +1,11 @@
+import actionsConfig from '../../data/config/actions.json' with { type: 'json' };
+
+const INJECTION_APPLY = process.env.INJECTION_APPLY === 'true';
+
+const injectionPoints = Object.fromEntries(
+  (actionsConfig.injection_points || []).map(p => [p.name, p])
+);
+
 function mulberry32(seed) {
   return function () {
     seed |= 0;
@@ -41,7 +49,7 @@ function buildPressureSkills(vars, order) {
     freeze: `  if (dist <= ${vars.freezeDist} && skillReady(me, "freeze") && me.freeze) { me.freeze(); return true; }`,
     stun: `  if (dist <= ${vars.stunDist} && skillReady(me, "stun") && me.stun) { me.stun(); return true; }`,
     poison: `  if (dist <= ${vars.poisonDist}${vars.strictLineClear ? ' && lineClear(game, my, enemyPos)' : ''} && skillReady(me, "poison") && me.poison) { me.poison(); return true; }`,
-    overload: `  if (dist <= ${vars.overloadDist} && lineClear(game, my, enemyPos) && skillReady(me, "overload") && me.overload${vars.checkBulletBeforeOverload ? ' && !me.bullet' : ''}) { me.overload(); return true; }`,
+    overload: `  if (dist <= ${vars.overloadDist}${vars.strictLineClear ? ' && lineClear(game, my, enemyPos)' : ''} && skillReady(me, "overload") && me.overload${vars.checkBulletBeforeOverload ? ' && !me.bullet' : ''}) { me.overload(); return true; }`,
   };
   for (const skill of order) {
     lines.push(templates[skill]);
@@ -75,42 +83,119 @@ function buildTurnToward(turnRightFirst) {
 }
 
 export function buildBaseStrategy({ tankName = 'agentank-tank', seed = 0, params } = {}) {
-  const rng = mulberry32(seed);
+  const injectionOn = INJECTION_APPLY || process.env.INJECTION_APPLY === '1';
+  const rng = injectionOn ? mulberry32(seed) : null;
+
+  function rngVal(fallback, rngMin, rngMax) {
+    if (injectionOn) return intRange(rng, rngMin, rngMax);
+    return fallback;
+  }
+  function rngBool(fallbackChance) {
+    if (injectionOn) return rng() > fallbackChance;
+    return true;
+  }
+  function rngShuffle(arr) {
+    if (injectionOn) return shuffle(rng, arr);
+    return [...arr];
+  }
+  function rngCoin() {
+    if (injectionOn) return rng() > 0.5;
+    return false;
+  }
+
+  function applyMutation(name, parameters, mutationFn) {
+    const cfg = injectionPoints[name];
+    if (!injectionOn || cfg?.enabled === false) return parameters.default;
+    const fn = cfg?.mutationFn || mutationFn;
+
+    switch (fn) {
+      case 'randomMutation':
+        if (parameters.min !== undefined && parameters.max !== undefined) {
+          return intRange(rng, parameters.min, parameters.max);
+        }
+        if (parameters.threshold !== undefined) {
+          return rng() > parameters.threshold;
+        }
+        if (parameters.array !== undefined) {
+          return shuffle(rng, parameters.array);
+        }
+        return rng() > 0.5;
+
+      case 'weight_mutate':
+        if (parameters.min !== undefined && parameters.max !== undefined) {
+          const center = parameters.default;
+          const span = parameters.max - parameters.min;
+          const u = rng() * 2 - 1;
+          const v = rng() * 2 - 1;
+          const s = u * u + v * v;
+          if (s >= 1 || s === 0) return intRange(rng, parameters.min, parameters.max);
+          const z = u * Math.sqrt(-2 * Math.log(s) / s);
+          const val = Math.round(center + z * (span / 6));
+          return Math.max(parameters.min, Math.min(parameters.max, val));
+        }
+        if (parameters.threshold !== undefined) {
+          return rng() > parameters.threshold;
+        }
+        if (parameters.array !== undefined) {
+          return shuffle(rng, parameters.array);
+        }
+        return rng() > 0.5;
+
+      case 'rngVal':
+        return intRange(rng, parameters.min, parameters.max);
+      case 'rngBool':
+        return rng() > (parameters.threshold ?? 0.5);
+      case 'rngShuffle':
+        return shuffle(rng, parameters.array ?? parameters.default);
+      case 'rngCoin':
+        return rng() > 0.5;
+      default:
+        return parameters.default;
+    }
+  }
 
   // === Group 1: Numerical Thresholds (8) ===
-  const bfsLimit = params?.bfsLimit ?? intRange(rng, 50, 120);
-  const bulletThreatRange = params?.bulletThreatRange ?? intRange(rng, 2, 6);
-  const enemyDangerRange = params?.enemyDangerRange ?? intRange(rng, 2, 5);
-  const freezeDist = params?.freezeDist ?? intRange(rng, 3, 8);
-  const stunDist = params?.stunDist ?? intRange(rng, 3, 8);
-  const poisonDist = params?.poisonDist ?? intRange(rng, 4, 9);
-  const overloadDist = params?.overloadDist ?? intRange(rng, 4, 9);
-  const defenseThreatRange = params?.defenseThreatRange ?? intRange(rng, 3, 7);
+  const bfsLimit = params?.bfsLimit ?? applyMutation('bfsLimit', { default: 80, min: 50, max: 120 }, 'rngVal');
+  const bulletThreatRange = params?.bulletThreatRange ?? applyMutation('bulletThreatRange', { default: 4, min: 2, max: 6 }, 'rngVal');
+  const enemyDangerRange = params?.enemyDangerRange ?? applyMutation('enemyDangerRange', { default: 3, min: 2, max: 5 }, 'rngVal');
+  const freezeDist = params?.freezeDist ?? applyMutation('freezeDist', { default: 5, min: 3, max: 8 }, 'rngVal');
+  const stunDist = params?.stunDist ?? applyMutation('stunDist', { default: 4, min: 3, max: 8 }, 'rngVal');
+  const poisonDist = params?.poisonDist ?? applyMutation('poisonDist', { default: 6, min: 4, max: 9 }, 'rngVal');
+  const overloadDist = params?.overloadDist ?? applyMutation('overloadDist', { default: 5, min: 4, max: 9 }, 'rngVal');
+  const defenseThreatRange = params?.defenseThreatRange ?? applyMutation('defenseThreatRange', { default: 4, min: 3, max: 7 }, 'rngVal');
 
   // === Group 2: Boolean Switches (6) ===
-  const checkFireLocked = params?.checkFireLocked ?? rng() > 0.3;
-  const checkShielded = params?.checkShielded ?? rng() > 0.4;
-  const useShield = params?.useShield ?? rng() > 0.25;
-  const useBoost = params?.useBoost ?? rng() > 0.25;
-  const useCloak = params?.useCloak ?? rng() > 0.35;
-  const checkBulletBeforeOverload = params?.checkBulletBeforeOverload ?? rng() > 0.4;
+  const checkFireLocked = params?.checkFireLocked ?? applyMutation('checkFireLocked', { default: true, threshold: 0.3 }, 'rngBool');
+  const checkShielded = params?.checkShielded ?? applyMutation('checkShielded', { default: true, threshold: 0.4 }, 'rngBool');
+  const useShield = params?.useShield ?? applyMutation('useShield', { default: true, threshold: 0.25 }, 'rngBool');
+  const useBoost = params?.useBoost ?? applyMutation('useBoost', { default: true, threshold: 0.25 }, 'rngBool');
+  const useCloak = params?.useCloak ?? applyMutation('useCloak', { default: true, threshold: 0.35 }, 'rngBool');
+  const checkBulletBeforeOverload = params?.checkBulletBeforeOverload ?? applyMutation('checkBulletBeforeOverload', { default: true, threshold: 0.4 }, 'rngBool');
 
   // === Group 3: Priority Orderings (4) ===
-  const defensiveOrder = shuffle(rng, ['shield', 'boost', 'cloak']);
-  const pressureOrder = shuffle(rng, ['freeze', 'stun', 'poison', 'overload']);
-  const neighborDirs = shuffle(rng, [
-    { dx: 1, dy: 0 },
-    { dx: -1, dy: 0 },
-    { dx: 0, dy: 1 },
-    { dx: 0, dy: -1 },
-  ]);
-  const turnRightFirst = rng() > 0.5;
+  const defensiveOrder = params?.defensiveOrder ?? applyMutation('defensiveOrder', { default: ['shield', 'boost', 'cloak'], array: ['shield', 'boost', 'cloak'] }, 'rngShuffle');
+  const pressureOrder = params?.pressureOrder ?? applyMutation('pressureOrder', { default: ['freeze', 'stun', 'poison', 'overload'], array: ['freeze', 'stun', 'poison', 'overload'] }, 'rngShuffle');
+  const neighborDirs = params?.neighborDirs ?? applyMutation('neighborDirs', {
+    default: [
+      { dx: 1, dy: 0 },
+      { dx: -1, dy: 0 },
+      { dx: 0, dy: 1 },
+      { dx: 0, dy: -1 },
+    ],
+    array: [
+      { dx: 1, dy: 0 },
+      { dx: -1, dy: 0 },
+      { dx: 0, dy: 1 },
+      { dx: 0, dy: -1 },
+    ],
+  }, 'rngShuffle');
+  const turnRightFirst = params?.turnRightFirst ?? applyMutation('turnRightFirst', { default: false }, 'rngCoin');
 
   // === Group 4: Behavioral Strategies (4) ===
-  const preferStar = rng() > 0.4;
-  const aggressiveDodge = rng() > 0.5;
-  const preemptiveSkills = rng() > 0.5;
-  const strictLineClear = rng() > 0.5;
+  const preferStar = params?.preferStar ?? applyMutation('preferStar', { default: true, threshold: 0.4 }, 'rngBool');
+  const aggressiveDodge = params?.aggressiveDodge ?? applyMutation('aggressiveDodge', { default: true, threshold: 0.5 }, 'rngBool');
+  const preemptiveSkills = params?.preemptiveSkills ?? applyMutation('preemptiveSkills', { default: true, threshold: 0.5 }, 'rngBool');
+  const strictLineClear = params?.strictLineClear ?? applyMutation('strictLineClear', { default: true, threshold: 0.5 }, 'rngBool');
 
   const vars = {
     bfsLimit,
@@ -311,7 +396,11 @@ function skillReady(me, type) {
 }
 
 function tryDefensiveSkill(me, enemy, my) {
-  if (!bulletThreatens(my, enemy && enemy.bullet)) return false;
+  var b = enemy && enemy.bullet;
+  if (!b || !b.position) return false;
+  var bp = { x: b.position[0], y: b.position[1] };
+  var bdist = Math.abs(bp.x - my.x) + Math.abs(bp.y - my.y);
+  if (bdist > ${defenseThreatRange} || !bulletThreatens(my, b)) return false;
 ${defensiveSkillsBlock}
   return false;
 }
