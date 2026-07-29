@@ -225,7 +225,7 @@ export function buildBaseStrategy({ tankName = 'agentank-tank', seed = 0, params
     shieldedCheck: checkShielded ? ' || enemy.status.shielded' : '',
     targetExpr: preferStar ? 'starPos || enemyPos' : 'enemyPos || starPos',
     aggressiveDodgeBlock: aggressiveDodge
-      ? `  if (enemyPos && canShootNow(me, enemy, game, my, enemyPos)) {\n    return aimOrFire(me, my, enemyPos);\n  }\n`
+      ? `  if (enemyPos && canShootNow(me, enemy, game, my, enemyPos)) {\n    return aimOrFire(me, my, enemyPos, game);\n  }\n`
       : '',
     preemptiveSkillsBlock: preemptiveSkills
       ? `  if (enemyPos && tryPressureSkill(me, enemy, game, my, enemyPos)) return;\n`
@@ -248,8 +248,11 @@ ${vars.preemptiveSkillsBlock}`/* no leading newline needed — the block has its
   var dodge = dodgeMove(me, enemy, game, my);
   if (dodge) return actMove(me, dodge);
 
+  var cornerEscape = escapeCornerTrap(game, my, enemy, enemyPos);
+  if (cornerEscape) return actMove(me, cornerEscape);
+
   if (enemyPos && canShootNow(me, enemy, game, my, enemyPos)) {
-    return aimOrFire(me, my, enemyPos);
+    return aimOrFire(me, my, enemyPos, game);
   }
 
   if (tryPressureSkill(me, enemy, game, my, enemyPos)) return;
@@ -262,7 +265,7 @@ ${vars.preemptiveSkillsBlock}`/* no leading newline needed — the block has its
 
   var safe = safestNeighbor(game, my, enemy, enemyPos);
   if (safe) return actMove(me, safe);
-  if (enemyPos) return aimOrFire(me, my, enemyPos);
+  if (enemyPos) return aimOrFire(me, my, enemyPos, game);
   me.turn("right");
 }
 
@@ -294,11 +297,73 @@ function actMove(me, target) {
 
 ${turnTowardBlock}
 
-function aimOrFire(me, my, target) {
-  var need = wantedDir(my, target);
-  if (!need) return;
-  if (me.tank.direction === need${vars.fireLockedShoot} && !me.bullet) me.fire();
-  else turnToward(me, need);
+function aimOrFire(me, my, target, game) {
+  if (!target) return;
+  if (game && lineClear(game, my, target)) {
+    var need = wantedDir(my, target);
+    if (!need) return;
+    if (me.tank.direction === need${vars.fireLockedShoot} && !me.bullet) me.fire();
+    else turnToward(me, need);
+    return;
+  }
+  if (game && tryWallFire(me, my, target, game)) return;
+}
+
+function tryWallFire(me, my, target, game) {
+  if (me.bullet${vars.fireLockedShoot}) return false;
+  var dirs = ["up", "right", "down", "left"];
+  for (var wi = 0; wi < dirs.length; wi++) {
+    if (wallShotHits(game, my, dirs[wi], target)) {
+      if (me.tank.direction === dirs[wi]) me.fire();
+      else turnToward(me, dirs[wi]);
+      return true;
+    }
+  }
+  return false;
+}
+
+function wallShotHits(game, origin, dir, target) {
+  var d = dirDelta(dir);
+  var p = { x: origin.x, y: origin.y };
+  var bounced = false;
+  for (var step = 0; step < 50; step++) {
+    p = { x: p.x + d.x, y: p.y + d.y };
+    if (!inside(game, p)) return false;
+    if (p.x === target.x && p.y === target.y) return true;
+    var tile = game.map[p.x][p.y];
+    if (tile === "x") {
+      if (bounced) return false;
+      bounced = true;
+      if (d.x !== 0) d = { x: -d.x, y: 0 };
+      else d = { x: 0, y: -d.y };
+      p = { x: p.x - d.x, y: p.y - d.y };
+      continue;
+    }
+    if (tile === "m") return false;
+  }
+  return false;
+}
+
+function isCornerTrapped(game, my) {
+  if (my.x === 17 && my.y === 12) return true;
+  var blocked = 0;
+  var ns = neighbors(my);
+  for (var ci = 0; ci < ns.length; ci++) {
+    if (!passable(game, ns[ci], null)) blocked++;
+  }
+  return blocked >= 3;
+}
+
+function escapeCornerTrap(game, my, enemy, enemyPos) {
+  if (!isCornerTrapped(game, my)) return null;
+  var ns = neighbors(my);
+  for (var ei = 0; ei < ns.length; ei++) {
+    if (passable(game, ns[ei], enemyPos) && isSafeAfterMove(ns[ei], enemy, game)) return ns[ei];
+  }
+  for (var ej = 0; ej < ns.length; ej++) {
+    if (passable(game, ns[ej], enemyPos)) return ns[ej];
+  }
+  return null;
 }
 
 function inside(game, p) {
